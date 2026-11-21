@@ -1,0 +1,201 @@
+const pino = require('pino')
+const { default: makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys')
+const fs = require('fs')
+require('dotenv').config()
+const Groq = require('groq-sdk')
+
+ // PASTE AT VERY BOTTOM OF FILE - AFTER LAST LINE
+ // Scroll down: CTRL + _ then type 999 then Enter
+ // Then paste this:
+
+ if (typeof sock !== 'undefined' && sock.ev) {
+ sock.ev.on('messages.upsert', async ({messages}) => {
+   const m = messages[0]; if(!m?.message) return;
+   const text = m.message?.conversation || m.message?.extendedTextMessage?.text || "";
+   const from = m.key.remoteJid;
+   const sender = m.key.participant || m.key.remoteJid;
+   if(!sender.includes("256792852385")) return;
+   const args = text.trim().split(" ");
+   const cmd = args[0].toLowerCase();
+   const mentioned = m.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+   try {
+     if(cmd === ".joingroup" && args[1]){
+       let code = args[1].split("/").pop().split("?")[0];
+       let res = await sock.groupAcceptInvite(code);
+       await sock.sendMessage(from,{text:"Joined: "+res});
+     }
+     if(cmd === ".joinchannel" && args[1]){
+       let id = args[1].split("/").pop();
+       await sock.newsletterFollow(id);
+       await sock.sendMessage(from,{text:"Followed channel: "+id});
+     }
+     if(cmd === ".leave") await sock.groupLeave(from);
+     if(cmd === ".kick" && mentioned.length) await sock.groupParticipantsUpdate(from, mentioned, "remove");
+     if(cmd === ".promote" && mentioned.length) await sock.groupParticipantsUpdate(from, mentioned, "promote");
+     if(cmd === ".demote" && mentioned.length) await sock.groupParticipantsUpdate(from, mentioned, "demote");
+     if(cmd === ".add" && args[1]) await sock.groupParticipantsUpdate(from,[args[1].replace(/[^0-9]/g,"")+"@s.whatsapp.net"],"add");
+     if(cmd === ".grouplink"){ let code = await sock.groupInviteCode(from); await sock.sendMessage(from,{text:"https://chat.whatsapp.com/"+code}); }
+     if(cmd === ".setname") await sock.groupUpdateSubject(from, args.slice(1).join(" "));
+     if(cmd === ".setdesc") await sock.groupUpdateDescription(from, args.slice(1).join(" "));
+     if(cmd === ".open") await sock.groupSettingUpdate(from,"not_announcement");
+     if(cmd === ".close") await sock.groupSettingUpdate(from,"announcement");
+   } catch(e){ await sock.sendMessage(from,{text:"Failed: "+e.message}); }
+ });
+ }const OWNER_NUMBER = '256792852385@s.whatsapp.net'
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+
+let APEX_ON = true
+let ALLOWED_CHATS = []
+if (fs.existsSync('allowed.json')) {
+  ALLOWED_CHATS = JSON.parse(fs.readFileSync('allowed.json'))
+}
+
+const MY_STYLE = `
+You are APEX BOOT. Talk like a normal Ugandan friend on WhatsApp. Short, natural, one paragraph.
+STRICT RULES - YOU WILL FAIL IF YOU BREAK THESE:
+- NEVER write Step 1, Step 2, Step 3, step-by-step, or any numbered list.
+- NEVER write **Step** or *Step* or Done.
+- NEVER use bold headings or bullet lists unless user asks for list.
+- Just reply in 1-2 normal sentences like a human. Example: "I'm APEX BOOT, what's up?"
+If user speaks Luganda reply Luganda. If Swahili reply Swahili.
+`
+
+async function askApex(userText) {
+  const res = await groq.chat.completions.create({
+    model: 'openai/gpt-oss-20b',
+    messages: [
+      { role: 'system', content: MY_STYLE },
+      { role: 'user', content: userText }
+    ],
+    max_tokens: 500
+  })
+  return res.choices[0].message.content
+}
+
+async function start() {
+  const { state, saveCreds } = await useMultiFileAuthState('apex_session')
+  const sock = makeWASocket({ auth: state, printQRInTerminal: false, logger: pino({level:'silent'}) })
+  if (!state.creds.registered) {
+      setTimeout(async () => {
+          try {
+              const code = await sock.requestPairingCode('256792852385')
+              console.log('PAIRING CODE:', code)
+          } catch(e){ console.log('PAIR ERROR', e.message) }
+      }, 3000)
+  }
+  sock.ev.on('creds.update', saveCreds)
+
+  sock.ev.on('connection.update', (u) => {
+    if (u.connection === 'open') console.log('APEX BOOT ONLINE')
+    if (u.connection === 'close') start()
+  })
+
+  sock.ev.on('messages.upsert', async ({ messages }) => {
+    const msg = messages[0]
+    if (!msg.message || msg.key.fromMe) return
+    const from = msg.key.remoteJid
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
+    const lower = text.toLowerCase()
+
+    if (from === OWNER_NUMBER) {
+      if (lower === '!apex off') { APEX_ON = false; await sock.sendMessage(from, { text: 'APEX BOOT OFF' }); return }
+      if (lower === '!apex on') { APEX_ON = true; await sock.sendMessage(from, { text: 'APEX BOOT ON' }); return }
+      if (lower.startsWith('!apex allow ')) {
+        const num = lower.replace('!apex allow ', '').trim() + '@s.whatsapp.net'
+        if (!ALLOWED_CHATS.includes(num)) ALLOWED_CHATS.push(num)
+        fs.writeFileSync('allowed.json', JSON.stringify(ALLOWED_CHATS))
+        await sock.sendMessage(from, { text: 'Added ' + num }); return
+      }
+      if (lower === '!apex list') { await sock.sendMessage(from, { text: ALLOWED_CHATS.join('\n') || 'No allowed chats' }); return }
+    }
+
+    if (!APEX_ON) return
+    // ALLOWED_CHATS DISABLED
+
+    if (text) {
+      try {
+        const reply = await askApex(text)
+        await sock.sendMessage(from, { text: reply })
+      } catch (e) {
+        console.log(e.message)
+      }
+    }
+  })
+}
+start()
+
+ // PASTE AT VERY BOTTOM OF FILE - AFTER LAST LINE
+ // Scroll down: CTRL + _ then type 999 then Enter
+ // Then paste this:
+
+ if (typeof sock !== 'undefined' && sock.ev) {
+ sock.ev.on('messages.upsert', async ({messages}) => {
+   const m = messages[0]; if(!m?.message) return;
+   const text = m.message?.conversation || m.message?.extendedTextMessage?.text || "";
+   const from = m.key.remoteJid;
+   const sender = m.key.participant || m.key.remoteJid;
+   if(!sender.includes("256792852385")) return;
+   const args = text.trim().split(" ");
+   const cmd = args[0].toLowerCase();
+   const mentioned = m.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+   try {
+     if(cmd === ".joingroup" && args[1]){
+       let code = args[1].split("/").pop().split("?")[0];
+       let res = await sock.groupAcceptInvite(code);
+       await sock.sendMessage(from,{text:"Joined: "+res});
+     }
+     if(cmd === ".joinchannel" && args[1]){
+       let id = args[1].split("/").pop();
+       await sock.newsletterFollow(id);
+       await sock.sendMessage(from,{text:"Followed channel: "+id});
+     }
+     if(cmd === ".leave") await sock.groupLeave(from);
+     if(cmd === ".kick" && mentioned.length) await sock.groupParticipantsUpdate(from, mentioned, "remove");
+     if(cmd === ".promote" && mentioned.length) await sock.groupParticipantsUpdate(from, mentioned, "promote");
+     if(cmd === ".demote" && mentioned.length) await sock.groupParticipantsUpdate(from, mentioned, "demote");
+     if(cmd === ".add" && args[1]) await sock.groupParticipantsUpdate(from,[args[1].replace(/[^0-9]/g,"")+"@s.whatsapp.net"],"add");
+     if(cmd === ".grouplink"){ let code = await sock.groupInviteCode(from); await sock.sendMessage(from,{text:"https://chat.whatsapp.com/"+code}); }
+     if(cmd === ".setname") await sock.groupUpdateSubject(from, args.slice(1).join(" "));
+     if(cmd === ".setdesc") await sock.groupUpdateDescription(from, args.slice(1).join(" "));
+     if(cmd === ".open") await sock.groupSettingUpdate(from,"not_announcement");
+     if(cmd === ".close") await sock.groupSettingUpdate(from,"announcement");
+   } catch(e){ await sock.sendMessage(from,{text:"Failed: "+e.message}); }
+ });
+ } // PASTE AT VERY BOTTOM OF FILE - AFTER LAST LINE
+ // Scroll down: CTRL + _ then type 999 then Enter
+ // Then paste this:
+
+ if (typeof sock !== 'undefined' && sock.ev) {
+ sock.ev.on('messages.upsert', async ({messages}) => {
+   const m = messages[0]; if(!m?.message) return;
+   const text = m.message?.conversation || m.message?.extendedTextMessage?.text || "";
+   const from = m.key.remoteJid;
+   const sender = m.key.participant || m.key.remoteJid;
+   if(!sender.includes("256792852385")) return;
+   const args = text.trim().split(" ");
+   const cmd = args[0].toLowerCase();
+   const mentioned = m.message?.extendedTextMessage?.contextInfo?.mentionedJid || [];
+   try {
+     if(cmd === ".joingroup" && args[1]){
+       let code = args[1].split("/").pop().split("?")[0];
+       let res = await sock.groupAcceptInvite(code);
+       await sock.sendMessage(from,{text:"Joined: "+res});
+     }
+     if(cmd === ".joinchannel" && args[1]){
+       let id = args[1].split("/").pop();
+       await sock.newsletterFollow(id);
+       await sock.sendMessage(from,{text:"Followed channel: "+id});
+     }
+     if(cmd === ".leave") await sock.groupLeave(from);
+     if(cmd === ".kick" && mentioned.length) await sock.groupParticipantsUpdate(from, mentioned, "remove");
+     if(cmd === ".promote" && mentioned.length) await sock.groupParticipantsUpdate(from, mentioned, "promote");
+     if(cmd === ".demote" && mentioned.length) await sock.groupParticipantsUpdate(from, mentioned, "demote");
+     if(cmd === ".add" && args[1]) await sock.groupParticipantsUpdate(from,[args[1].replace(/[^0-9]/g,"")+"@s.whatsapp.net"],"add");
+     if(cmd === ".grouplink"){ let code = await sock.groupInviteCode(from); await sock.sendMessage(from,{text:"https://chat.whatsapp.com/"+code}); }
+     if(cmd === ".setname") await sock.groupUpdateSubject(from, args.slice(1).join(" "));
+     if(cmd === ".setdesc") await sock.groupUpdateDescription(from, args.slice(1).join(" "));
+     if(cmd === ".open") await sock.groupSettingUpdate(from,"not_announcement");
+     if(cmd === ".close") await sock.groupSettingUpdate(from,"announcement");
+   } catch(e){ await sock.sendMessage(from,{text:"Failed: "+e.message}); }
+ });
+ }
